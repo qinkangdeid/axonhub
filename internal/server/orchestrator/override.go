@@ -295,6 +295,39 @@ func applyOverrideRequestHeaders(outbound *PersistentOutboundTransformer) pipeli
 	})
 }
 
+// applyPassThroughBody creates a middleware that replaces the outbound request body with the
+// original inbound request body when the channel has PassThroughBody enabled and the inbound
+// and outbound API formats are identical.
+func applyPassThroughBody(outbound *PersistentOutboundTransformer) pipeline.Middleware {
+	return pipeline.OnRawRequest("pass-through-body", func(ctx context.Context, request *httpclient.Request) (*httpclient.Request, error) {
+		channel := outbound.GetCurrentChannel()
+		if channel == nil || channel.Settings == nil || !channel.Settings.PassThroughBody {
+			return request, nil
+		}
+
+		llmReq := outbound.state.LlmRequest
+		if llmReq == nil || llmReq.RawRequest == nil || len(llmReq.RawRequest.Body) == 0 {
+			return request, nil
+		}
+
+		// Compare inbound API format (from llm.Request) with outbound API format (from httpclient.Request).
+		// httpclient.Request.APIFormat is set by the outbound transformer to indicate the actual format
+		// used for this specific request.
+		if request.APIFormat == "" || string(llmReq.APIFormat) != request.APIFormat {
+			return request, nil
+		}
+
+		log.Debug(ctx, "applying pass-through body",
+			log.String("channel", channel.Name),
+			log.String("api_format", request.APIFormat),
+		)
+
+		request.Body = llmReq.RawRequest.Body
+
+		return request, nil
+	})
+}
+
 // applyUserAgentPassThrough creates a middleware that applies the User-Agent pass-through setting.
 func applyUserAgentPassThrough(outbound *PersistentOutboundTransformer, systemService *biz.SystemService) pipeline.Middleware {
 	return pipeline.OnRawRequest("user-agent-pass-through", func(ctx context.Context, request *httpclient.Request) (*httpclient.Request, error) {
